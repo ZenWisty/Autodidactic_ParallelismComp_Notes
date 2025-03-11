@@ -127,7 +127,7 @@ kernel2<<<grid, block, 0, stream2>>>(data_2);
 ```
 
 44. 可以检查是否程序跑到了malloc的内存之外的地址（超出），或者其他 memory error， 用 cuda-memcheck    ./my-cuda-binary
-45. <img src = "./doc_im/parallel1.PNG"> <br>
+45. <img src = "./doc_im/parallel1.png"> <br>
 用 -lineinfo 不会损失 performance，且使得debugging 更加简单。会在PTX编译中出现如下的注释：<br>
 <img src="./doc_im/parallel2.png"><br>
 46. 不要使用 nvcc 的编译选项（与nvprof和nsight comput无关）：--profile(是gprof的)； --debug（我们是看device code，这是活的host code 的）；--device-debug（performance骤降）。
