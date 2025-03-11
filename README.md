@@ -134,5 +134,108 @@ kernel2<<<grid, block, 0, stream2>>>(data_2);
 47. Profile 会 降低 performance，只是用来分析的。要看实际performance 要profile 再跑一遍。（多跑几遍取后几次的平均，前面是warmup）<br>
 48. <img src = "./doc_im/parallel3.png"><br>
 
-##### 矩阵为例：
+#### 矩阵为例：
 1. 对于计算密集型的kernel，SM中可能产生Register bank conflict。<br>
+#### metrices 相关：
+1. hit rate 相关：cpu类比<br>
+<img src="./doc_im/parallel4.png"><br>
+在多级缓存设计中，L1 缓存是附加在 CPU 上的，它体积小但速度快。虽然，L2 缓存附加到主缓存，即 L1 缓存，它的大小更大且速度较慢，但仍比主内存快。
+  a. Effective Access Time = Hit rate * Cache access time + Miss rate * Lower level access time<br>
+  b. 多级缓存的平均访问时间：（Tavg）     Tavg = H1 * C1 + (1 – H1) * (H2 * C2 +(1 – H2) *M )<br>
+
+2. <img src="./doc_im/parallel5.png"><br>可以看出active warps 低（但是这是有原因的）。平均每两三个cycles 才 issue 一个 warp。<br>
+3. <img src="./doc_im/parallel6.png"><br>这里跟2是一个例子，2和3看起来，虽然joint有更少的stalls，但是2中也说了active warps 更少。<br>
+4. occupancy：如果没有足够的warp to run，或warp 的运行时间十分不一样，或者最后一个wave 不够大不够填满 GPU，都有可能导致测出的 occupancy 下降。   occupancy 不是一定越高越好，但是太低的 occupancy 可能会导致没有足够的能力掩盖latency。<br>
+5. 其中一个occupancy低的原因概括：<br>
+<img src="./doc_im/parallel7.png"><br>
+
+6. theoretical occupancy 是由每个block用多少register数目、shared mem以及单SM能提供多少这些hardware等限制因素算出的。actual occupancy会因 4 中所说的原因而少于计算值。<br>
+
+7.<img src="./doc_im/parallel8.png"><br>
+一个warp会同时读，同时写，所以一个warp都写同一个值。<br>
+8. <img src="./doc_im/parallel9.png"><br>cuda世界中，在cache中和在mem中是不同的。<br>
+9. <img src="./doc_im/parallel10.png"><br>这里举了基础矩阵相乘的例子，一个线程中：每次 multiply-add 操作（2fp ops）对应两个访存操作。也就是 4Byte memory 对应一个FLOP操作，因此150GB带宽/4B 对应 37.5GFLOPS操作。<br>
+
+10. 对于 tiled matrix multiplication ，tile 的大小与计算：(关键是看每次global load 对应多少次floating point operation 来判断是否够):<br>
+<img src="./doc_im/parallel11.png"><br>
+
+11. 看device 能力：<br>
+<img src="./doc_im/parallel12.png"><br>
+
+12. 
+```cpp
+for(int q=0; q<ceil(((float)WIDTH/TILE_WIDTH)); q++){
+    if(ROW< WIDTH&& (q*TILE_WIDTH+tx)<WIDTH){
+        subTileM[ty][tx] = M[ROW*WIDTH + q*TILE_WIDTH+tx];
+    }else{
+        subTileM[ty][tx] = 0;
+    }
+	if(COL< WIDTH&& (q*TILE_WIDTH + ty)<WIDTH){
+        subTileN[ty][tx] = N[(q*TILE_WIDTH+ty)*WIDTH + COL];
+    }else{
+        subTileN[ty][tx] = 0;
+    }
+    __syncthreads();
+
+    for (int k=0; k<TILE_WIDTH; k++){
+        pvalue += subTileM[ty][k]*subTileN[k][tx];
+    }
+    __syncthreads();
+
+    if (ROW<WIDTH && COL<WIDTH){
+        P[ROW*WIDTH + COL] = pvalue;
+    }
+}
+```
+
+13. <img src="./doc_im/parallel13.png"><br>这里注意访问global时 M不是coalesced ，而N是。<br>
+
+14. 目前课中所说的 L1 也就是shared mem 的bank  每个bank 单元是 32bit（4 byte，一个int，也是一个float 大小） 的，共32个bank。
+15. 关于 effective bandwidth 随 offset 的变化，体现的是 misalaigned mem的访问global的问题：<br>
+<img src="./doc_im/parallel14.png">device memory被CUDA driver aligned 成了256-byte memory segments。compute capability 2.0之后的设备, 每个SM有 L1 cache with a 128-byte line size。<br>
+  a. 高版本的device，两种访问L2 cache 的能力参考：https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#simple-access-pattern<br>
+  b. 简而言之即： 6.0 or higher: the k-th thread accesses the k-th word in a 32-byte aligned array. Not all threads need to participate。举例：同一个warp中的thread访问连续的4-byte word（float）。则如下：<br>
+  <img src="./doc_im/parallel15.png"><br>
+  c. <br>
+
+### 补充笔记：
+题外话：如何计算mem band width：memory clock2就是effective memory clock；  bandwidth = effective memory clock * Memory bus width %8。
+1. For example, transferring two matrices to the device to perform a matrix addition and then transferring the results back to the host will not realize much performance benefit. The issue here is the number of operations performed per data element transferred. For the preceding procedure, assuming matrices of size NxN, there are N2 operations (additions) and 3N2 elements transferred, so the ratio of operations to elements transferred is 1:3 or O(1). Performance benefits can be more readily achieved when this ratio is higher. For example, a matrix multiplication of the same matrices requires N3 operations (multiply-add), so the ratio of operations to elements transferred is O(N), in which case the larger the matrix the greater the performance benefit.
+2. Data should be kept on the device as long as possible.      数据在device上停留的越久越好用的越多越好
+3. 关于Timing： cudaEventSynchronize()阻塞直到该特定流中的特定事件被GPU记录。因为驱动程序可能会交错执行来自其他非默认流的CUDA调用，其他流中的调用可能会被包含在计时中。
+4.  (an operation in the default stream can begin only after all preceding calls in any stream have completed; and no subsequent operation in any stream can begin until it finishes), function cudaDeviceSynchronize() cudaStreamSynchronize() cudaEventSynchronize() can be used reliably for timing in the default stream.
+5. 测量 cudaEvent 时间的方法：·https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#using-cuda-gpu-timers
+6. Because L2 cache is on-chip, it potentially provides higher bandwidth and lower latency accesses to global memory.  也即 L2 cache 对 global mem访问有更加短的latency，以及更高的带宽。
+
+#### volatile     &     restrict:
+volatile : 只有ARM 中 volatile 默认是 volatile:iso 模式的； 其他平台上默认未 volatile:ms
+volatile 与 __restrict  一起用时，volatile 优先级高
+volatile 的意思是 这个 variable 可能被硬件修改
+
+__restrict 的意思是 该指针指向的对象不会被别的指针所引用
+__declspec(restrict) 只能用来修饰 函数 ， __restrict 只能用来修饰变量。 <br>
+
+单个SM 上至少要有2个block ， 至少有6个warp ，这样才有可能掩盖访存所用的延迟。
+
+#### 优化显存访问的方式包括：
+1. 将可以采用相同的block和grid维度实现的几个kernel合并为一个，减少对显存的访问。
+2. 避免将线程私有变量分配到 local memory
+3. 为满足合并访问，采用cudaMallocPitch() 和 cudaMalloc3D() 分配显存   ？
+4. 为满足合并访问，对数据类型进行对其（使用 __align）  ？
+5. 为满足合并访问，保证访存的首地址从16的整数倍开始，如果可能，尽量让每个线程一次读的数据字长都为32bit     ？
+6. 在数据只会被访问一次，且满足合并访问的情况下使用 zero copy
+7.  
+8. 使用拥有缓存的常数存储器和纹理存储器提高某些应用的实际带宽
+
+9. 为使SM使用量达到最大，要调整使用的shared memory 和 register 用量，每个线程处理的数据量。
+10. 通过调整block 的 大小，修改算法和指令，以及动态开辟 ?  shared memory, 都可以提高 shared memory 的使用量。
+11. 但是减少 register 的使用量是很难的，因为 register 的使用量不是由内核中申明的变量多少决定的，而是内核中使用寄存器的峰值时刻用了多少决定的。    通常情况下，实际用量大于申明的用量。
+<br>
+<br>
+<br>
+
+<img src="./doc_im/parallel16.png"><br>
+像shared memory一样，寄存器的Register File也会被分为几个bank，如果一条指令的的源寄存器有2个以上来自同一bank，就会产生冲突。指令会重发射，浪费一个cycle。PS：这个地方是从旷视的博客中看的。然后对于maxwell架构的GPU而言，bank数为4，寄存器id%4即所属bank<br>
+
+##### 一个线程中的一个registor一次最多存128bit的数据
+因此下面的情况：从global中读取数据到  shared mem 中（中间经过registor），那么如果数据是Float4型的，一个数据占用4*8=32bit，因此每次取数据registor中最多存放4个Float4型数。
