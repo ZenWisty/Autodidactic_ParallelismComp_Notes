@@ -365,3 +365,37 @@ histogram 的 三种方法： 1） 256个items 都用atomic add 进 global mem�
 >histogram 操作在 tone mapping （亮度调整） 中十分有用
 
 ### compact 问题
+有两种输出形式： sparse 输出 或者 dense 输出<br>
+compact 计算操作在以下情况下最有用：可以滤除大部分threads， 滤除后每个后续work 计算量十分大<br>
+compact op 的几步主要步骤：
+<img src="./doc_im/CUDAprimary/1-15.PNG"><br>
+例题：下面两个compact问题，在每一步，那个问题更快：<br>
+<img src="./doc_im/CUDAprimary/1-16.PNG"><br>
+scan 操作是 compact 操作中的重要一步， 他通常能在predicate 步骤之后快速的算出需要allocate 多少memory 以供后面的计算存储结果（或为后面的步骤的输入提供存储）：<br>
+<img src="./doc_im/CUDAprimary/1-17.PNG"><br>
+这些在图形学中也有使用，比如说：判断图像中一共有多少个三角形需要显示（上图绿色的可以作为predicate 的结果，而红色的通过scan操作，可以知道需要allocate多少memory，例如在显示区域边沿的图像需要clip一部份，然后重新分成若干小三角形）；<br>
+ >补充题外小知识：一个三角形被rectangle截取之后最多可以拆分成5个小三角形
+
+### segmented scan 问题 & 实现
+segment scan 初级问题 & matrix multiplication<br>
+> 这个问题的解法对于 sparse matrix 的相关计算十分关键。用例比如 google 的巨型matrix，用于衡量web page 的重要性
+
+其中 matrix 用到的 关键表示是 CSR representation<br>
+segment scan 在matrix multiply 中的用途大致是这样的：<br>
+<img src="./doc_im/CUDAprimary/1-18.PNG"><br>
+
+>当然这里用 segment reduce 替代 segment scan 会更快一点
+
+### sort 问题
+>limit thread divergence<br>
+prefer coalesced memory visit<br>
+keep hardware busy<br>
+
+#### brick sort
+<img src="./doc_im/CUDAprimary/1-19.PNG"><br>
+
+#### merge sort
+刚开始的时候，我们用 1 thread block 就能解决很多sorting problem； 到了中期，我们用1个thread block 去解决大概一个 sorting problem； 后期，我们用所有的 thread blocks 去配合解决一个single sorting problem。<br>
+<img src="./doc_im/CUDAprimary/1-20.PNG"><br>
+后期运行算法，分割小任务的方式图：<br>
+<img src="./doc_im/CUDAprimary/1-21.PNG"><br>
